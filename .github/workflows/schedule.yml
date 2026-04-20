@@ -1,0 +1,37 @@
+yamlname: Defense News Bot
+
+on:
+  schedule:
+    - cron: '0 22 * * *'   # 07:00 KST
+    - cron: '0 23 * * *'   # 08:00 KST
+    - cron: '0 0 * * *'    # 09:00 KST
+    - cron: '0 1 * * *'    # 10:00 KST
+    - cron: '0 2 * * *'    # 11:00 KST
+    - cron: '0 3 * * *'    # 12:00 KST
+    - cron: '0 4 * * *'    # 13:00 KST
+    - cron: '0 5 * * *'    # 14:00 KST
+    - cron: '0 6 * * *'    # 15:00 KST
+    - cron: '0 7 * * *'    # 16:00 KST
+    - cron: '0 8 * * *'    # 17:00 KST
+    - cron: '0 9 * * *'    # 18:00 KST
+  workflow_dispatch:        # 수동 실행 버튼
+
+jobs:
+  send-news:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 패키지 설치
+        run: pip install python-telegram-bot==20.7 feedparser==6.0.11
+
+      - name: 뉴스 전송
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python defense_news_bot.py

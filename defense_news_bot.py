@@ -18,12 +18,11 @@ COMPANIES = {
     "한국항공우주":     ["한국항공우주", "Korea Aerospace Industries", "KAI"],
 }
 
-# 방산 전문 매체 RSS 직접 구독
 DEFENSE_RSS_FEEDS = [
-    ("더구루",       "https://www.theguru.co.kr/rss/allArticle.xml"),
-    ("디펜스타임즈",  "https://www.defensetimes.co.kr/rss/allArticle.xml"),
-    ("브레이킹디펜스","https://breakingdefense.com/feed/"),
-    ("디펜스뉴스",    "https://www.defensenews.com/arc/outboundfeeds/rss/"),
+    ("더구루",        "https://www.theguru.co.kr/rss/allArticle.xml"),
+    ("디펜스타임즈",   "https://www.defensetimes.co.kr/rss/allArticle.xml"),
+    ("브레이킹디펜스", "https://breakingdefense.com/feed/"),
+    ("디펜스뉴스",     "https://www.defensenews.com/arc/outboundfeeds/rss/"),
 ]
 
 INCLUDE_KEYWORDS = [
@@ -58,12 +57,11 @@ def is_relevant(title: str) -> bool:
     return False
 
 
-def contains_company(title: str, company_key: str, queries: list[str]) -> bool:
-    title_lower = title.lower()
-    for q in queries:
-        if q.lower() in title_lower:
-            return True
-    return False
+def clean_title(title: str) -> str:
+    """구글 뉴스 제목에서 '- 매체명' 제거"""
+    if " - " in title:
+        title = title.rsplit(" - ", 1)[0]
+    return title.strip()
 
 
 def fetch_google_news(query: str, lang: str = "ko", country: str = "KR") -> list[dict]:
@@ -81,13 +79,9 @@ def fetch_google_news(query: str, lang: str = "ko", country: str = "KR") -> list
             continue
         if pub < cutoff:
             continue
-        # 구글 RSS 링크 대신 실제 기사 제목에서 출처 추출
-        title = entry.title
-        # 구글 뉴스는 "제목 - 매체명" 형식
-        link = entry.link
         articles.append({
-            "title": title,
-            "link": link,
+            "title": clean_title(entry.title),
+            "link": entry.link,
             "published": pub + timedelta(hours=9),
             "lang": "🇰🇷" if lang == "ko" else "🇺🇸",
         })
@@ -95,7 +89,6 @@ def fetch_google_news(query: str, lang: str = "ko", country: str = "KR") -> list
 
 
 def fetch_defense_rss(company_queries: list[str]) -> list[dict]:
-    """방산 전문 매체 RSS에서 직접 크롤링"""
     now_utc = datetime.utcnow()
     cutoff = now_utc - timedelta(hours=24)
     articles = []
@@ -113,48 +106,37 @@ def fetch_defense_rss(company_queries: list[str]) -> list[dict]:
                         continue
                 except Exception:
                     continue
-
                 if pub < cutoff:
                     continue
-
                 title = entry.get("title", "")
                 link = entry.get("link", "")
-
-                # 해당 기업 관련 기사인지 체크
-                title_lower = title.lower()
-                matched = any(q.lower() in title_lower for q in company_queries)
-                if not matched:
+                if not any(q.lower() in title.lower() for q in company_queries):
                     continue
-
                 articles.append({
-                    "title": title,
+                    "title": clean_title(title),
                     "link": link,
                     "published": pub + timedelta(hours=9),
                     "lang": f"⭐ {media_name}",
                 })
         except Exception as e:
             logger.warning(f"{media_name} RSS 오류: {e}")
-
     return articles
 
 
-def fetch_company_news(company_key: str, queries: list[str]) -> list[dict]:
+def fetch_company_news(queries: list[str]) -> list[dict]:
     seen = set()
     all_articles = []
 
-    # 1순위: 방산 전문 매체 RSS 직접
     for a in fetch_defense_rss(queries):
         if a["title"] not in seen:
             seen.add(a["title"])
             all_articles.append(a)
 
-    # 2순위: 구글 뉴스 한국어 (필터 적용)
     for a in fetch_google_news(queries[0], lang="ko", country="KR"):
         if a["title"] not in seen and is_relevant(a["title"]):
             seen.add(a["title"])
             all_articles.append(a)
 
-    # 3순위: 구글 뉴스 영어 (필터 적용)
     for q in queries[1:]:
         for a in fetch_google_news(q, lang="en", country="US"):
             if a["title"] not in seen and is_relevant(a["title"]):
@@ -165,48 +147,27 @@ def fetch_company_news(company_key: str, queries: list[str]) -> list[dict]:
     return all_articles
 
 
-def format_message(articles_by_company: dict) -> list[str]:
+def format_company_message(company: str, articles: list[dict], index: int, total_companies: int) -> str:
+    """기업 하나당 메시지 하나 생성"""
     now_kst = datetime.utcnow() + timedelta(hours=9)
 
-    header = (
-        f"📰 *방산주 핵심 뉴스 브리핑*\n"
-        f"🕐 {now_kst.strftime('%Y-%m-%d %H:%M')} KST 기준 최근 24시간\n"
-        f"⭐ 방산전문매체  🇰🇷 국내  🇺🇸 해외\n"
-        f"{'─' * 28}"
-    )
+    lines = []
+    lines.append(f"🏢 *{company}* ({len(articles)}건)")
+    lines.append(f"🕐 {now_kst.strftime('%Y-%m-%d %H:%M')} KST · {index}/{total_companies}")
+    lines.append(f"⭐방산전문  🇰🇷국내  🇺🇸해외")
+    lines.append("─" * 26)
 
-    body_lines = []
-    total = 0
-    for company, articles in articles_by_company.items():
-        total += len(articles)
-        body_lines.append(f"\n🏢 *{company}* ({len(articles)}건)")
-        if not articles:
-            body_lines.append("  • 관련 핵심 뉴스 없음")
-        else:
-            for a in articles[:15]:
-                time_str = a["published"].strftime("%m/%d %H:%M")
-                flag = a.get("lang", "")
-                title = a["title"][:50] + ("..." if len(a["title"]) > 50 else "")
-                body_lines.append(f"  {flag} `{time_str}` [{title}]({a['link']})")
+    if not articles:
+        lines.append("관련 핵심 뉴스 없음")
+    else:
+        for a in articles[:15]:
+            time_str = a["published"].strftime("%m/%d %H:%M")
+            flag = a.get("lang", "")
+            title = a["title"][:55] + ("..." if len(a["title"]) > 55 else "")
+            # 마크다운 링크 형식으로 깔끔하게
+            lines.append(f"{flag} `{time_str}`\n[{title}]({a['link']})\n")
 
-    footer = f"\n{'─' * 28}\n📊 총 *{total}건* 핵심 뉴스"
-
-    full = header + "\n" + "\n".join(body_lines) + footer
-    if len(full) <= 4000:
-        return [full]
-
-    messages = [header]
-    chunk = ""
-    for line in body_lines:
-        if len(chunk) + len(line) > 3800:
-            messages.append(chunk)
-            chunk = line
-        else:
-            chunk += "\n" + line
-    if chunk:
-        messages.append(chunk)
-    messages.append(footer)
-    return messages
+    return "\n".join(lines)
 
 
 async def main():
@@ -216,21 +177,22 @@ async def main():
     logger.info("뉴스 수집 시작...")
     articles_by_company = {}
     for company_key, queries in COMPANIES.items():
-        articles = fetch_company_news(company_key, queries)
+        articles = fetch_company_news(queries)
         articles_by_company[company_key] = articles
         logger.info(f"{company_key}: {len(articles)}건")
 
-    messages = format_message(articles_by_company)
-
     bot = Bot(token=TELEGRAM_TOKEN)
-    for msg in messages:
+    total = len(COMPANIES)
+
+    for i, (company, articles) in enumerate(articles_by_company.items(), 1):
+        msg = format_company_message(company, articles, i, total)
         await bot.send_message(
             chat_id=CHAT_ID,
             text=msg,
             parse_mode=ParseMode.MARKDOWN,
             disable_web_page_preview=True
         )
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1)
 
     logger.info("전송 완료!")
 

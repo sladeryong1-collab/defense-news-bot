@@ -1,9 +1,11 @@
 import asyncio
 import os
 import logging
+import re
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta
 import feedparser
-import urllib.parse
 from telegram import Bot
 from telegram.constants import ParseMode
 
@@ -46,6 +48,23 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=lo
 logger = logging.getLogger(__name__)
 
 
+def resolve_google_link(url: str) -> str:
+    """구글 뉴스 링크를 원본 기사 링크로 변환"""
+    try:
+        # URL에서 실제 링크 추출 시도
+        if "news.google.com" not in url:
+            return url
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        # 리다이렉트를 따라가서 최종 URL 획득
+        with urllib.request.urlopen(req, timeout=5) as response:
+            return response.url
+    except Exception:
+        return url  # 실패시 원본 유지
+
+
 def is_relevant(title: str) -> bool:
     title_lower = title.lower()
     for kw in EXCLUDE_KEYWORDS:
@@ -58,7 +77,6 @@ def is_relevant(title: str) -> bool:
 
 
 def clean_title(title: str) -> str:
-    """구글 뉴스 제목에서 '- 매체명' 제거"""
     if " - " in title:
         title = title.rsplit(" - ", 1)[0]
     return title.strip()
@@ -135,12 +153,15 @@ def fetch_company_news(queries: list[str]) -> list[dict]:
     for a in fetch_google_news(queries[0], lang="ko", country="KR"):
         if a["title"] not in seen and is_relevant(a["title"]):
             seen.add(a["title"])
+            # 구글 링크 → 원본 링크 변환
+            a["link"] = resolve_google_link(a["link"])
             all_articles.append(a)
 
     for q in queries[1:]:
         for a in fetch_google_news(q, lang="en", country="US"):
             if a["title"] not in seen and is_relevant(a["title"]):
                 seen.add(a["title"])
+                a["link"] = resolve_google_link(a["link"])
                 all_articles.append(a)
 
     all_articles.sort(key=lambda x: x["published"], reverse=True)
@@ -148,9 +169,7 @@ def fetch_company_news(queries: list[str]) -> list[dict]:
 
 
 def format_company_message(company: str, articles: list[dict], index: int, total_companies: int) -> str:
-    """기업 하나당 메시지 하나 생성"""
     now_kst = datetime.utcnow() + timedelta(hours=9)
-
     lines = []
     lines.append(f"🏢 *{company}* ({len(articles)}건)")
     lines.append(f"🕐 {now_kst.strftime('%Y-%m-%d %H:%M')} KST · {index}/{total_companies}")
@@ -164,7 +183,6 @@ def format_company_message(company: str, articles: list[dict], index: int, total
             time_str = a["published"].strftime("%m/%d %H:%M")
             flag = a.get("lang", "")
             title = a["title"][:55] + ("..." if len(a["title"]) > 55 else "")
-            # 마크다운 링크 형식으로 깔끔하게
             lines.append(f"{flag} `{time_str}`\n[{title}]({a['link']})\n")
 
     return "\n".join(lines)

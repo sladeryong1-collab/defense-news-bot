@@ -1,16 +1,16 @@
 import asyncio
 import os
+import json
 import logging
-import re
-import urllib.parse
-import urllib.request
 from datetime import datetime, timedelta
 import feedparser
+import urllib.parse
 from telegram import Bot
 from telegram.constants import ParseMode
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
+SENT_ARTICLES_FILE = "sent_articles.json"
 
 COMPANIES = {
     "한화에어로스페이스": ["한화에어로스페이스", "Hanwha Aerospace"],
@@ -48,21 +48,19 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=lo
 logger = logging.getLogger(__name__)
 
 
-def resolve_google_link(url: str) -> str:
-    """구글 뉴스 링크를 원본 기사 링크로 변환"""
-    try:
-        # URL에서 실제 링크 추출 시도
-        if "news.google.com" not in url:
-            return url
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "Mozilla/5.0"}
-        )
-        # 리다이렉트를 따라가서 최종 URL 획득
-        with urllib.request.urlopen(req, timeout=5) as response:
-            return response.url
-    except Exception:
-        return url  # 실패시 원본 유지
+def load_sent_articles() -> set:
+    """이전에 전송한 기사 제목 목록 로드"""
+    if os.path.exists(SENT_ARTICLES_FILE):
+        with open(SENT_ARTICLES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return set(data.get("titles", []))
+    return set()
+
+
+def save_sent_articles(titles: set):
+    """전송한 기사 제목 저장 (48시간 이상 된 건 자동 삭제)"""
+    with open(SENT_ARTICLES_FILE, "w", encoding="utf-8") as f:
+        json.dump({"titles": list(titles)}, f, ensure_ascii=False, indent=2)
 
 
 def is_relevant(title: str) -> bool:
@@ -141,49 +139,43 @@ def fetch_defense_rss(company_queries: list[str]) -> list[dict]:
     return articles
 
 
-def fetch_company_news(queries: list[str]) -> list[dict]:
+def fetch_company_news(queries: list[str], sent_titles: set) -> list[dict]:
     seen = set()
     all_articles = []
 
     for a in fetch_defense_rss(queries):
-        if a["title"] not in seen:
+        if a["title"] not in seen and a["title"] not in sent_titles:
             seen.add(a["title"])
             all_articles.append(a)
 
     for a in fetch_google_news(queries[0], lang="ko", country="KR"):
-        if a["title"] not in seen and is_relevant(a["title"]):
+        if a["title"] not in seen and a["title"] not in sent_titles and is_relevant(a["title"]):
             seen.add(a["title"])
-            # 구글 링크 → 원본 링크 변환
-            a["link"] = resolve_google_link(a["link"])
             all_articles.append(a)
 
     for q in queries[1:]:
         for a in fetch_google_news(q, lang="en", country="US"):
-            if a["title"] not in seen and is_relevant(a["title"]):
+            if a["title"] not in seen and a["title"] not in sent_titles and is_relevant(a["title"]):
                 seen.add(a["title"])
-                a["link"] = resolve_google_link(a["link"])
                 all_articles.append(a)
 
     all_articles.sort(key=lambda x: x["published"], reverse=True)
     return all_articles
 
 
-def format_company_message(company: str, articles: list[dict], index: int, total_companies: int) -> str:
+def format_company_message(company: str, articles: list[dict], index: int, total: int) -> str:
     now_kst = datetime.utcnow() + timedelta(hours=9)
     lines = []
-    lines.append(f"🏢 *{company}* ({len(articles)}건)")
-    lines.append(f"🕐 {now_kst.strftime('%Y-%m-%d %H:%M')} KST · {index}/{total_companies}")
+    lines.append(f"🏢 *{company}* ({len(articles)}건 새 뉴스)")
+    lines.append(f"🕐 {now_kst.strftime('%Y-%m-%d %H:%M')} KST · {index}/{total}")
     lines.append(f"⭐방산전문  🇰🇷국내  🇺🇸해외")
     lines.append("─" * 26)
 
-    if not articles:
-        lines.append("관련 핵심 뉴스 없음")
-    else:
-        for a in articles[:15]:
-            time_str = a["published"].strftime("%m/%d %H:%M")
-            flag = a.get("lang", "")
-            title = a["title"][:55] + ("..." if len(a["title"]) > 55 else "")
-            lines.append(f"{flag} `{time_str}`\n[{title}]({a['link']})\n")
+    for a in articles[:15]:
+        time_str = a["published"].strftime("%m/%d %H:%M")
+        flag = a.get("lang", "")
+        title = a["title"][:55] + ("..." if len(a["title"]) > 55 else "")
+        lines.append(f"{flag} `{time_str}`\n[{title}]({a['link']})\n")
 
     return "\n".join(lines)
 
@@ -192,17 +184,31 @@ async def main():
     if not TELEGRAM_TOKEN or not CHAT_ID:
         raise ValueError("TELEGRAM_TOKEN 또는 CHAT_ID 환경변수가 없습니다.")
 
-    logger.info("뉴스 수집 시작...")
+    sent_titles = load_sent_articles()
+    logger.info(f"기존 전송 기사 {len(sent_titles)}건 로드")
+
+    new_titles = set()
     articles_by_company = {}
+
     for company_key, queries in COMPANIES.items():
-        articles = fetch_company_news(queries)
+        articles = fetch_company_news(queries, sent_titles)
         articles_by_company[company_key] = articles
-        logger.info(f"{company_key}: {len(articles)}건")
+        for a in articles:
+            new_titles.add(a["title"])
+        logger.info(f"{company_key}: 새 기사 {len(articles)}건")
+
+    # 새 기사가 하나도 없으면 전송 안 함
+    total_new = sum(len(v) for v in articles_by_company.values())
+    if total_new == 0:
+        logger.info("새 기사 없음 — 전송 생략")
+        return
 
     bot = Bot(token=TELEGRAM_TOKEN)
     total = len(COMPANIES)
 
     for i, (company, articles) in enumerate(articles_by_company.items(), 1):
+        if not articles:
+            continue
         msg = format_company_message(company, articles, i, total)
         await bot.send_message(
             chat_id=CHAT_ID,
@@ -212,6 +218,8 @@ async def main():
         )
         await asyncio.sleep(1)
 
+    # 전송한 기사 저장
+    save_sent_articles(sent_titles | new_titles)
     logger.info("전송 완료!")
 
 

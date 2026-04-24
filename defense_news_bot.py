@@ -12,9 +12,6 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 SENT_ARTICLES_FILE = "sent_articles.json"
 
-# 07:00~18:00 KST 매시간 실행
-SCHEDULE_HOURS_KST = list(range(7, 19))
-
 COMPANIES = {
     "한화에어로스페이스": ["한화에어로스페이스", "Hanwha Aerospace"],
     "한화시스템":       ["한화시스템", "Hanwha Systems"],
@@ -173,11 +170,9 @@ def format_company_message(company: str, articles: list[dict], index: int, total
     return "\n".join(lines)
 
 
-async def send_news():
-    now_kst = datetime.utcnow() + timedelta(hours=9)
-    if now_kst.hour not in SCHEDULE_HOURS_KST:
-        logger.info(f"운영 시간 외 ({now_kst.hour}시) — 스킵")
-        return
+async def main():
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        raise ValueError("TELEGRAM_TOKEN 또는 CHAT_ID 없음")
 
     sent_titles = load_sent_articles()
     new_titles = set()
@@ -188,6 +183,7 @@ async def send_news():
         articles_by_company[company_key] = articles
         for a in articles:
             new_titles.add(a["title"])
+        logger.info(f"{company_key}: {len(articles)}건")
 
     total_new = sum(len(v) for v in articles_by_company.values())
     if total_new == 0:
@@ -209,29 +205,7 @@ async def send_news():
         await asyncio.sleep(1)
 
     save_sent_articles(sent_titles | new_titles)
-    logger.info(f"전송 완료! {total_new}건")
-
-
-async def scheduler():
-    """매시간 정각에 실행"""
-    logger.info("스케줄러 시작!")
-    while True:
-        now = datetime.utcnow()
-        # 다음 정각까지 대기
-        next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-        wait_seconds = (next_hour - now).total_seconds()
-        logger.info(f"다음 실행까지 {wait_seconds:.0f}초 대기")
-        await asyncio.sleep(wait_seconds)
-        await send_news()
-
-
-async def main():
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        raise ValueError("TELEGRAM_TOKEN 또는 CHAT_ID 없음")
-    # 시작하자마자 한 번 실행
-    await send_news()
-    # 이후 매시간 정각 실행
-    await scheduler()
+    logger.info("전송 완료!")
 
 
 if __name__ == "__main__":

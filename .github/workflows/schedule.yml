@@ -2,7 +2,7 @@ name: Defense News Bot
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '0 22,0,2,4,6,8 * * *'   # 07:00, 09:00, 11:00, 13:00, 15:00, 17:00 KST
   workflow_dispatch:
 
 jobs:
@@ -19,7 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: 패키지 설치
-        run: pip install python-telegram-bot==20.7 feedparser==6.0.11
+        run: pip install -r requirements.txt
 
       - name: 기사 기록 파일 가져오기
         run: |
